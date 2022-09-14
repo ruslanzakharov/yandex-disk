@@ -20,6 +20,7 @@ class Item(db.Model):
 
     id = db.Column(db.String, primary_key=True)
     type = db.Column(db.String, nullable=False)
+    url = db.Column(db.String)
     size = db.Column(db.BigInteger)
     relation = db.relationship(
         'Relation', cascade='all,delete', backref='item')
@@ -56,11 +57,17 @@ def string_to_dt(dt_string):
     return dt.strptime(dt_string, '%Y-%m-%dT%H:%M:%SZ')
 
 
+def dt_to_string(dt_obj):
+    """Превращает объект DateTime в строку."""
+    return dt_obj.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
 def new_item(item_json, datetime):
     new_item = Item(
         id=item_json['id'],
         type=item_json['type'],
-        size=item_json['size']
+        url=item_json['url'],
+        size=item_json['size'] if item_json['type'] == FILE else 0
     )
     relation = Relation(
         item_id=item_json['id'],
@@ -79,6 +86,7 @@ def update_item(item_json, datetime):
 
     rel.item.size = item_json['size']
     rel.parent_id = item_json['parentId']
+    rel.url = item_json['url']
 
     history = History.query.filter_by(item_id=item_json['id']).first()
     history.date = string_to_dt(datetime)
@@ -136,8 +144,56 @@ class ItemDelete(Resource):
         return '', 200
 
 
+def children_info(item_id):
+    """Возвращает информацию о дочерних элементах папки"""
+    children = []
+    for child in Relation.query.filter_by(parent_id=item_id):
+        history = History.query.filter_by(item_id=child.item_id).first()
+        child_json = {
+            'id': child.item.id,
+            'url': child.item.url,
+            'type': child.item.type,
+            'date': dt_to_string(history.date),
+            'size': child.item.size,
+            'children': None,
+        }
+        if child.item.type == FOLDER:
+            child_json['children'] = children_info(child.item_id)
+
+        children.append(child_json)
+
+    return children
+
+
+class ItemGet(Resource):
+    def get(self, item_id):
+        try:
+            item = Item.query.filter_by(id=item_id).first()
+            if not item:
+                return {'code': 404, 'message': 'Item not found'}, 404
+            history = History.query.filter_by(item_id=item_id).first()
+
+            res = {
+                'id': item_id,
+                'url': item.url,
+                'type': item.type,
+                'date': dt_to_string(history.date),
+                'size': item.size,
+                'children': None,
+            }
+
+            if res['type'] == FILE:
+                return res, 200
+
+            res['children'] = children_info(item.id)
+            return res, 200
+        except:
+            return {'code': 400, 'message': 'Validation Failed'}, 400
+
+
 api.add_resource(ItemPost, '/imports')
 api.add_resource(ItemDelete, '/delete/<item_id>')
+api.add_resource(ItemGet, '/nodes/<item_id>')
 
 
 if __name__ == '__main__':
