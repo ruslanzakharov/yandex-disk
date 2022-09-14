@@ -36,7 +36,7 @@ class Relation(db.Model):
         primary_key=True
     )
     parent_id = db.Column(
-        db.String,
+        db.String
     )
 
 
@@ -48,7 +48,40 @@ class History(db.Model):
         db.ForeignKey(Item.id),
         primary_key=True
     )
-    date = db.Column(db.DateTime, primary_key=True)
+    date = db.Column(db.DateTime)
+
+
+def string_to_dt(dt_string):
+    """Превращает строку в объект DateTime."""
+    return dt.strptime(dt_string, '%Y-%m-%dT%H:%M:%SZ')
+
+
+def new_item(item_json, datetime):
+    new_item = Item(
+        id=item_json['id'],
+        type=item_json['type'],
+        size=item_json['size']
+    )
+    relation = Relation(
+        item_id=item_json['id'],
+        parent_id=item_json['parentId']
+    )
+    history = History(
+        item_id=item_json['id'],
+        date=string_to_dt(datetime)
+    )
+    for obj in [new_item, relation, history]:
+        db.session.add(obj)
+
+
+def update_item(item_json, datetime):
+    rel = Relation.query.filter_by(item_id=item_json['id']).first()
+
+    rel.item.size = item_json['size']
+    rel.parent_id = item_json['parentId']
+
+    history = History.query.filter_by(item_id=item_json['id']).first()
+    history.date = string_to_dt(datetime)
 
 
 class ItemPost(Resource):
@@ -57,22 +90,11 @@ class ItemPost(Resource):
 
         try:
             for item in req['items']:
-                new_item = Item(
-                    id=item['id'],
-                    type=item['type'],
-                    size=item['size']
-                )
-                relation = Relation(
-                    item_id=item['id'],
-                    parent_id=item['parentId']
-                )
-                history = History(
-                    item_id=item['id'],
-                    date=dt.strptime(
-                        req['updateDate'], '%Y-%m-%dT%H:%M:%SZ')
-                )
-                for obj in [new_item, relation, history]:
-                    db.session.add(obj)
+                if not Item.query.filter_by(id=item['id']).first():
+                    new_item(item, req['updateDate'])
+                else:
+                    update_item(item, req['updateDate'])
+
                 db.session.commit()
         except:
             db.session.rollback()
