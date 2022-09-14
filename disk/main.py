@@ -144,9 +144,10 @@ class ItemDelete(Resource):
         return '', 200
 
 
-def children_info(item_id):
-    """Возвращает информацию о дочерних элементах папки"""
+def children_info(item_id, size):
+    """Возвращает информацию о дочерних элементах папки."""
     children = []
+
     for child in Relation.query.filter_by(parent_id=item_id):
         history = History.query.filter_by(item_id=child.item_id).first()
         child_json = {
@@ -154,15 +155,20 @@ def children_info(item_id):
             'url': child.item.url,
             'type': child.item.type,
             'date': dt_to_string(history.date),
-            'size': child.item.size,
+            'size': 0,
             'children': None,
         }
         if child.item.type == FOLDER:
-            child_json['children'] = children_info(child.item_id)
+            child_json['children'], child_size = children_info(
+                child.item_id, size)
+            child_json['size'] = child_size
+        elif child.item.type == FILE:
+            child_json['size'] = child.item.size
 
+        size += child_json['size']
         children.append(child_json)
 
-    return children
+    return children, size
 
 
 class ItemGet(Resource):
@@ -178,14 +184,15 @@ class ItemGet(Resource):
                 'url': item.url,
                 'type': item.type,
                 'date': dt_to_string(history.date),
-                'size': item.size,
+                'size': 0,
                 'children': None,
             }
 
             if res['type'] == FILE:
+                res['size'] = item.size
                 return res, 200
 
-            res['children'] = children_info(item.id)
+            res['children'], res['size'] = children_info(item.id, 0)
             return res, 200
         except:
             return {'code': 400, 'message': 'Validation Failed'}, 400
@@ -195,6 +202,10 @@ api.add_resource(ItemPost, '/imports')
 api.add_resource(ItemDelete, '/delete/<item_id>')
 api.add_resource(ItemGet, '/nodes/<item_id>')
 
+db.create_all()
+
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5001)
+    # app.run(debug=True, port=80, host='0.0.0.0')
+    app.run(debug=True)
+
