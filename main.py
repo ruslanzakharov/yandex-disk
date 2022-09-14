@@ -5,6 +5,8 @@ from flask_sqlalchemy import SQLAlchemy
 
 from datetime import datetime as dt
 
+FILE, FOLDER = 'FILE', 'FOLDER'
+
 app = Flask(__name__)
 api = Api(app)
 
@@ -19,19 +21,22 @@ class Item(db.Model):
     id = db.Column(db.String, primary_key=True)
     type = db.Column(db.String, nullable=False)
     size = db.Column(db.BigInteger)
+    relation = db.relationship(
+        'Relation', cascade='all,delete', backref='item')
+    history = db.relationship(
+        'History', cascade='all,delete', backref='item')
 
 
-class Parent(db.Model):
-    __tablename__ = 'Parents'
+class Relation(db.Model):
+    __tablename__ = 'Relations'
 
     item_id = db.Column(
         db.String,
-        db.ForeignKey('Items.id', ondelete='CASCADE'),
+        db.ForeignKey('Items.id'),
         primary_key=True
     )
     parent_id = db.Column(
         db.String,
-        db.ForeignKey('Items.id', ondelete='CASCADE'),
     )
 
 
@@ -40,13 +45,13 @@ class History(db.Model):
 
     item_id = db.Column(
         db.String,
-        db.ForeignKey('Items.id', ondelete='CASCADE'),
+        db.ForeignKey(Item.id),
         primary_key=True
     )
     date = db.Column(db.DateTime, primary_key=True)
 
 
-class Imports(Resource):
+class ItemPost(Resource):
     def post(self):
         req = request.json
 
@@ -57,16 +62,16 @@ class Imports(Resource):
                     type=item['type'],
                     size=item['size']
                 )
-                parent = Parent(
+                relation = Relation(
                     item_id=item['id'],
                     parent_id=item['parentId']
                 )
                 history = History(
                     item_id=item['id'],
                     date=dt.strptime(
-                        req['updateDate'], '%Y-%m-%dT%H:%M:%S.%fZ')
+                        req['updateDate'], '%Y-%m-%dT%H:%M:%SZ')
                 )
-                for obj in [new_item, parent, history]:
+                for obj in [new_item, relation, history]:
                     db.session.add(obj)
                 db.session.commit()
         except:
@@ -76,7 +81,42 @@ class Imports(Resource):
         return '', 200
 
 
-api.add_resource(Imports, '/imports')
+def folder_delete(item):
+    """Удаляет папку и ее содержимое."""
+    for child in Relation.query.filter_by(parent_id=item.id):
+        if child.item.type == FILE:
+            db.session.delete(child.item)
+        elif child.item.type == FOLDER:
+            folder_delete(child.item)
+
+    db.session.delete(item)
+
+
+class ItemDelete(Resource):
+    def delete(self, item_id):
+        try:
+            # date = dt.strptime(request.form['date'], '%Y-%m-%dT%H:%M:%SZ')
+
+            item = Item.query.filter_by(id=item_id).first()
+            if not item:
+                return {'code': 404, 'message': 'Item not found'}
+
+            if item.type == FILE:
+                db.session.delete(item)
+            elif item.type == FOLDER:
+                folder_delete(item)
+
+            db.session.commit()
+        except:
+            db.session.rollback()
+            return {'code': 400, 'message': 'Validation Failed'}
+
+        return '', 200
+
+
+api.add_resource(ItemPost, '/imports')
+api.add_resource(ItemDelete, '/delete/<item_id>')
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=5001)
