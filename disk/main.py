@@ -2,8 +2,6 @@ from flask import Flask, request
 from flask_restful import Api, Resource
 from flask_sqlalchemy import SQLAlchemy
 
-from sqlalchemy.ext.hybrid import hybrid_method
-
 from datetime import datetime as dt
 
 FILE, FOLDER = 'FILE', 'FOLDER'
@@ -11,7 +9,7 @@ FILE, FOLDER = 'FILE', 'FOLDER'
 app = Flask(__name__)
 api = Api(app)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///test.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///disk.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
@@ -251,13 +249,11 @@ def children_info(item):
     return children
 
 
-db.create_all()
-
-
 api.add_resource(ItemPost, '/imports')
 api.add_resource(ItemDelete, '/delete/<item_id>')
 api.add_resource(ItemGet, '/nodes/<item_id>')
 api.add_resource(Updates, '/updates')
 
+
 if __name__ == '__main__':
-    app.run(debug=True, port=8080, host='localhost')
+    app.run(port=80, host='0.0.0.0', debug=False)
