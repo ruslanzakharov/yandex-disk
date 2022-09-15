@@ -2,6 +2,8 @@ from flask import Flask, request
 from flask_restful import Api, Resource
 from flask_sqlalchemy import SQLAlchemy
 
+from sqlalchemy.ext.hybrid import hybrid_method
+
 from datetime import datetime as dt
 
 FILE, FOLDER = 'FILE', 'FOLDER'
@@ -23,6 +25,105 @@ class Item(db.Model):
     size = db.Column(db.BigInteger, default=None)
     url = db.Column(db.String(255), default=None)
     date = db.Column(db.DateTime, nullable=False)
+
+
+class ItemPost(Resource):
+    def post(self):
+        req = request.json
+
+        try:
+            for item in req['items']:
+                if not Item.query.filter_by(id=item['id']).first():
+                    new_item(item, req['updateDate'])
+                else:
+                    update_item(item, req['updateDate'])
+
+                db.session.commit()
+        except:
+            db.session.rollback()
+            return {'code': 400, 'message': 'Validation Failed'}, 400
+
+        return '', 200
+
+
+class ItemDelete(Resource):
+    def delete(self, item_id):
+        try:
+            date = string_to_dt(request.args['date'])
+
+            item = Item.query.filter_by(id=item_id).first()
+            if not item:
+                return {'code': 404, 'message': 'Item not found'}, 404
+
+            if item.type == FILE:
+                db.session.delete(item)
+                update_folder_sizes(item, -item.size, date)
+            elif item.type == FOLDER:
+                folder_delete(item)
+                update_folder_sizes(item, -item.size, date)
+
+            db.session.commit()
+        except:
+            db.session.rollback()
+            return {'code': 400, 'message': 'Validation Failed'}, 400
+
+        return '', 200
+
+
+class ItemGet(Resource):
+    def get(self, item_id):
+        try:
+            item = Item.query.filter_by(id=item_id).first()
+            if not item:
+                return {'code': 404, 'message': 'Item not found'}, 404
+
+            res = {
+                'id': item.id,
+                'url': item.url,
+                'parentId': item.parent_id,
+                'type': item.type,
+                'date': dt_to_string(item.date),
+                'size': item.size,
+                'children': None,
+            }
+
+            if item.type == FOLDER:
+                res['children'] = children_info(item)
+
+            return res, 200
+        except:
+            return {'code': 400, 'message': 'Validation Failed'}, 400
+
+
+class Updates(Resource):
+    def get(self):
+        date_arg = string_to_dt(request.args['date'])
+
+        res = {'items': []}
+
+        for item in Item.query.all():
+            if not date_in_last_24h(date_arg, item.date):
+                continue
+
+            item_json = {
+                'id': item.id,
+                'url': item.url,
+                'date': dt_to_string(item.date),
+                'parentId': item.parent_id,
+                'size': item.size,
+                'type': item.type
+            }
+            res['items'].append(item_json)
+
+        return res, 200
+
+
+def date_in_last_24h(date, item_date):
+    """Проверяет, изменялся ли элемент в последние 24 часа с момента date."""
+    day = 86400
+    delta = int((date - item_date).total_seconds())
+
+    return 0 <= delta <= day
 
 
 def string_to_dt(dt_string):
@@ -117,25 +218,6 @@ def update_folder_sizes(item, diff, dt_obj):
         update_folder_sizes(parent, diff, dt_obj)
 
 
-class ItemPost(Resource):
-    def post(self):
-        req = request.json
-
-        try:
-            for item in req['items']:
-                if not Item.query.filter_by(id=item['id']).first():
-                    new_item(item, req['updateDate'])
-                else:
-                    update_item(item, req['updateDate'])
-
-                db.session.commit()
-        except:
-            db.session.rollback()
-            return {'code': 400, 'message': 'Validation Failed'}, 400
-
-        return '', 200
-
-
 def folder_delete(item):
     """Удаляет папку и ее содержимое."""
     for child in Item.query.filter_by(parent_id=item.id):
@@ -145,30 +227,6 @@ def folder_delete(item):
             folder_delete(child)
 
     db.session.delete(item)
-
-
-class ItemDelete(Resource):
-    def delete(self, item_id):
-        try:
-            date = string_to_dt(request.args['date'])
-
-            item = Item.query.filter_by(id=item_id).first()
-            if not item:
-                return {'code': 404, 'message': 'Item not found'}, 404
-
-            if item.type == FILE:
-                db.session.delete(item)
-                update_folder_sizes(item, -item.size, date)
-            elif item.type == FOLDER:
-                folder_delete(item)
-                update_folder_sizes(item, -item.size, date)
-
-            db.session.commit()
-        except:
-            db.session.rollback()
-            return {'code': 400, 'message': 'Validation Failed'}, 400
-
-        return '', 200
 
 
 def children_info(item):
@@ -193,35 +251,13 @@ def children_info(item):
     return children
 
 
-class ItemGet(Resource):
-    def get(self, item_id):
-        try:
-            item = Item.query.filter_by(id=item_id).first()
-            if not item:
-                return {'code': 404, 'message': 'Item not found'}, 404
-
-            res = {
-                'id': item.id,
-                'url': item.url,
-                'parentId': item.parent_id,
-                'type': item.type,
-                'date': dt_to_string(item.date),
-                'size': item.size,
-                'children': None,
-            }
-
-            if item.type == FOLDER:
-                res['children'] = children_info(item)
-
-            return res, 200
-        except:
-            return {'code': 400, 'message': 'Validation Failed'}, 400
+db.create_all()
 
 
 api.add_resource(ItemPost, '/imports')
 api.add_resource(ItemDelete, '/delete/<item_id>')
 api.add_resource(ItemGet, '/nodes/<item_id>')
-
+api.add_resource(Updates, '/updates')
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080, host='localhost')
