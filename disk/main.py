@@ -1,6 +1,5 @@
-import flask_sqlalchemy
-from flask import Flask, jsonify, request
-from flask_restful import Api, Resource, abort
+from flask import Flask, request
+from flask_restful import Api, Resource
 from flask_sqlalchemy import SQLAlchemy
 
 from datetime import datetime as dt
@@ -10,7 +9,7 @@ FILE, FOLDER = 'FILE', 'FOLDER'
 app = Flask(__name__)
 api = Api(app)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///disk.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///test.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
@@ -20,36 +19,10 @@ class Item(db.Model):
 
     id = db.Column(db.String, primary_key=True)
     type = db.Column(db.String, nullable=False)
-    url = db.Column(db.String)
-    size = db.Column(db.BigInteger)
-    relation = db.relationship(
-        'Relation', cascade='all,delete', backref='item')
-    history = db.relationship(
-        'History', cascade='all,delete', backref='item')
-
-
-class Relation(db.Model):
-    __tablename__ = 'Relations'
-
-    item_id = db.Column(
-        db.String,
-        db.ForeignKey('Items.id'),
-        primary_key=True
-    )
-    parent_id = db.Column(
-        db.String
-    )
-
-
-class History(db.Model):
-    __tablename__ = 'History'
-
-    item_id = db.Column(
-        db.String,
-        db.ForeignKey(Item.id),
-        primary_key=True
-    )
-    date = db.Column(db.DateTime)
+    parent_id = db.Column(db.String, default=None)
+    size = db.Column(db.BigInteger, default=None)
+    url = db.Column(db.String(255), default=None)
+    date = db.Column(db.DateTime, nullable=False)
 
 
 def string_to_dt(dt_string):
@@ -62,34 +35,86 @@ def dt_to_string(dt_obj):
     return dt_obj.strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def new_item(item_json, datetime):
-    new_item = Item(
-        id=item_json['id'],
-        type=item_json['type'],
-        url=item_json['url'],
-        size=item_json['size'] if item_json['type'] == FILE else 0
-    )
-    relation = Relation(
-        item_id=item_json['id'],
-        parent_id=item_json['parentId']
-    )
-    history = History(
-        item_id=item_json['id'],
-        date=string_to_dt(datetime)
-    )
-    for obj in [new_item, relation, history]:
-        db.session.add(obj)
+def new_item(item, datetime):
+    """Добавляет новый элемент."""
+    if item['type'] == FOLDER:
+        folder = Item(
+            id=item['id'],
+            type=FOLDER,
+            parent_id=item['parentId'],
+            date=string_to_dt(datetime)
+        )
+        db.session.add(folder)
+    elif item['type'] == FILE:
+        file = Item(
+            id=item['id'],
+            type=FILE,
+            parent_id=item['parentId'],
+            date=string_to_dt(datetime),
+            url=item['url'],
+            size=item['size']
+        )
+        db.session.add(file)
+
+        update_folder_sizes(file, file.size, file.date)
 
 
-def update_item(item_json, datetime):
-    rel = Relation.query.filter_by(item_id=item_json['id']).first()
+def update_item(item, datetime):
+    """Обновляет элемент."""
+    dt_obj = string_to_dt(datetime)
 
-    rel.item.size = item_json['size']
-    rel.parent_id = item_json['parentId']
-    rel.url = item_json['url']
+    if item['type'] == FOLDER:
+        folder = Item.query.filter_by(id=item['id']).first()
 
-    history = History.query.filter_by(item_id=item_json['id']).first()
-    history.date = string_to_dt(datetime)
+        old_parent_id = folder.parent_id
+        new_parent_id = item['parentId']
+        if old_parent_id != new_parent_id and folder.size:
+            # Уменьшаем размеры родительских папок в предыдущем месте
+            update_folder_sizes(folder, -folder.size, dt_obj)
+
+        folder.parent_id = new_parent_id
+        folder.date = datetime
+
+        if old_parent_id != new_parent_id and folder.size:
+            # Увеличиваем размеры родительских папок в новом месте
+            update_folder_sizes(folder, folder.size, dt_obj)
+
+    elif item['type'] == FILE:
+        file = Item.query.filter_by(id=item['id']).first()
+
+        old_parent_id = file.parent_id
+        new_parent_id = item['parentId']
+        old_size = file.size
+        new_size = item['size']
+        if old_parent_id != new_parent_id or old_size != new_size:
+            # Уменьшаем размеры родительских папок в предыдущем месте
+            # либо
+            # уменьшаем размеры родительских папок в текущем месте
+            update_folder_sizes(file, -file.size, dt_obj)
+
+        file.parent_id = item['parentId']
+        file.date = dt_obj
+        file.url = item['url']
+        file.size = item['size']
+
+        if old_parent_id != new_parent_id:
+            # Увеличиваем размеры родительских папок в новом месте
+            update_folder_sizes(file, file.size, dt_obj)
+
+        update_folder_sizes(file, file.size, dt_obj)
+
+
+def update_folder_sizes(item, diff, dt_obj):
+    """Обновляет веса родительских папок."""
+    if item.parent_id:
+        parent = Item.query.filter_by(id=item.parent_id).first()
+        if parent.size:
+            parent.size += diff
+        else:
+            parent.size = diff
+
+        parent.date = dt_obj
+        update_folder_sizes(parent, diff, dt_obj)
 
 
 class ItemPost(Resource):
@@ -113,62 +138,60 @@ class ItemPost(Resource):
 
 def folder_delete(item):
     """Удаляет папку и ее содержимое."""
-    for child in Relation.query.filter_by(parent_id=item.id):
-        if child.item.type == FILE:
-            db.session.delete(child.item)
-        elif child.item.type == FOLDER:
-            folder_delete(child.item)
+    for child in Item.query.filter_by(parent_id=item.id):
+        if child.type == FILE:
+            db.session.delete(child)
+        elif child.type == FOLDER:
+            folder_delete(child)
 
+    print(item, '-----------------------------------')
     db.session.delete(item)
 
 
 class ItemDelete(Resource):
     def delete(self, item_id):
-        try:
-            # date = dt.strptime(request.form['date'], '%Y-%m-%dT%H:%M:%SZ')
+        if True:
+            date = string_to_dt(request.args['date'])
 
             item = Item.query.filter_by(id=item_id).first()
             if not item:
-                return {'code': 404, 'message': 'Item not found'}
+                return {'code': 404, 'message': 'Item not found'}, 404
 
             if item.type == FILE:
                 db.session.delete(item)
+                update_folder_sizes(item, -item.size, date)
             elif item.type == FOLDER:
                 folder_delete(item)
+                update_folder_sizes(item, -item.size, date)
 
             db.session.commit()
-        except:
-            db.session.rollback()
-            return {'code': 400, 'message': 'Validation Failed'}
+        # except:
+        #     db.session.rollback()
+        #     return {'code': 400, 'message': 'Validation Failed'}, 400
 
         return '', 200
 
 
-def children_info(item_id, size):
+def children_info(item):
     """Возвращает информацию о дочерних элементах папки."""
     children = []
 
-    for child in Relation.query.filter_by(parent_id=item_id):
-        history = History.query.filter_by(item_id=child.item_id).first()
+    for child in Item.query.filter_by(parent_id=item.id):
         child_json = {
-            'id': child.item.id,
-            'url': child.item.url,
-            'type': child.item.type,
-            'date': dt_to_string(history.date),
-            'size': 0,
+            'id': child.id,
+            'url': child.url,
+            'parentId': child.parent_id,
+            'type': child.type,
+            'date': dt_to_string(child.date),
+            'size': child.size,
             'children': None,
         }
-        if child.item.type == FOLDER:
-            child_json['children'], child_size = children_info(
-                child.item_id, size)
-            child_json['size'] = child_size
-        elif child.item.type == FILE:
-            child_json['size'] = child.item.size
+        if child.type == FOLDER:
+            child_json['children'] = children_info(child)
 
-        size += child_json['size']
         children.append(child_json)
 
-    return children, size
+    return children
 
 
 class ItemGet(Resource):
@@ -177,22 +200,20 @@ class ItemGet(Resource):
             item = Item.query.filter_by(id=item_id).first()
             if not item:
                 return {'code': 404, 'message': 'Item not found'}, 404
-            history = History.query.filter_by(item_id=item_id).first()
 
             res = {
-                'id': item_id,
+                'id': item.id,
                 'url': item.url,
+                'parentId': item.parent_id,
                 'type': item.type,
-                'date': dt_to_string(history.date),
-                'size': 0,
+                'date': dt_to_string(item.date),
+                'size': item.size,
                 'children': None,
             }
 
-            if res['type'] == FILE:
-                res['size'] = item.size
-                return res, 200
+            if item.type == FOLDER:
+                res['children'] = children_info(item)
 
-            res['children'], res['size'] = children_info(item.id, 0)
             return res, 200
         except:
             return {'code': 400, 'message': 'Validation Failed'}, 400
@@ -202,10 +223,6 @@ api.add_resource(ItemPost, '/imports')
 api.add_resource(ItemDelete, '/delete/<item_id>')
 api.add_resource(ItemGet, '/nodes/<item_id>')
 
-db.create_all()
-
 
 if __name__ == '__main__':
-    # app.run(debug=True, port=80, host='0.0.0.0')
-    app.run(debug=True)
-
+    app.run(debug=True, port=8080, host='localhost')
