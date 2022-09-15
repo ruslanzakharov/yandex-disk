@@ -144,13 +144,12 @@ def folder_delete(item):
         elif child.type == FOLDER:
             folder_delete(child)
 
-    print(item, '-----------------------------------')
     db.session.delete(item)
 
 
 class ItemDelete(Resource):
     def delete(self, item_id):
-        if True:
+        try:
             date = string_to_dt(request.args['date'])
 
             item = Item.query.filter_by(id=item_id).first()
@@ -165,9 +164,9 @@ class ItemDelete(Resource):
                 update_folder_sizes(item, -item.size, date)
 
             db.session.commit()
-        # except:
-        #     db.session.rollback()
-        #     return {'code': 400, 'message': 'Validation Failed'}, 400
+        except:
+            db.session.rollback()
+            return {'code': 400, 'message': 'Validation Failed'}, 400
 
         return '', 200
 
